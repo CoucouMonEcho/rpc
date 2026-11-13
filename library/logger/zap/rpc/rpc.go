@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"io"
 
 	"github.com/air-go/rpc/library/logger"
 	zapLogger "github.com/air-go/rpc/library/logger/zap"
@@ -21,30 +22,47 @@ type RPCLogger struct {
 	config *RPCConfig
 }
 
-type RPCOption func(rl *RPCLogger)
+type options struct {
+	infoWriter  io.Writer
+	errorWriter io.Writer
+}
+
+type RPCOption func(l *options)
+
+func defaultOptions() *options {
+	return &options{}
+}
+
+// WithWriter sets both log destinations, overriding the rotating files created
+// from RPCConfig.InfoFile and RPCConfig.ErrorFile; a single writer is rejected.
+func WithWriter(infoWriter, errorWriter io.Writer) RPCOption {
+	return func(o *options) {
+		o.infoWriter, o.errorWriter = infoWriter, errorWriter
+	}
+}
 
 // NewRPCLogger
-func NewRPCLogger(config *RPCConfig, opts ...RPCOption) (rl *RPCLogger, err error) {
-	rl = &RPCLogger{config: config}
-
-	for _, o := range opts {
-		o(rl)
+func NewRPCLogger(config *RPCConfig, options ...RPCOption) (rl *RPCLogger, err error) {
+	opts := defaultOptions()
+	for _, o := range options {
+		o(opts)
 	}
 
-	infoWriter, errWriter, err := logger.RotateWriter(config.InfoFile, config.ErrorFile)
+	infoWriter, errorWriter, err := logger.ResolveWriters(opts.infoWriter, opts.errorWriter, config.InfoFile, config.ErrorFile)
 	if err != nil {
-		return
+		return nil, err
 	}
 
+	rl = &RPCLogger{config: config}
 	l, err := zapLogger.NewLogger(
 		zapLogger.WithCallerSkip(4),
 		zapLogger.WithModule(logger.ModuleRPC),
 		zapLogger.WithInfoWriter(infoWriter),
-		zapLogger.WithErrorWriter(errWriter),
+		zapLogger.WithErrorWriter(errorWriter),
 		zapLogger.WithLevel(config.Level),
 	)
 	if err != nil {
-		return
+		return nil, err
 	}
 	rl.ZapLogger = l
 

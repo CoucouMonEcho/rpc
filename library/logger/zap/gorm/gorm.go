@@ -3,6 +3,7 @@ package gorm
 import (
 	"context"
 	"errors"
+	"io"
 	"runtime"
 	"strings"
 	"time"
@@ -39,21 +40,39 @@ type GormLogger struct {
 	IgnoreRecordNotFoundError bool
 }
 
-type GormOption func(gl *GormLogger)
+type options struct {
+	infoWriter  io.Writer
+	errorWriter io.Writer
+}
+
+type GormOption func(l *options)
+
+func defaultOptions() *options {
+	return &options{}
+}
 
 var _ gormLogger.Interface = (*GormLogger)(nil)
 
-func NewGorm(config *GormConfig, opts ...GormOption) (gl *GormLogger, err error) {
+// WithWriter sets both log destinations, overriding the rotating files created
+// from GormConfig.InfoFile and GormConfig.ErrorFile; a single writer is rejected.
+func WithWriter(infoWriter, errorWriter io.Writer) GormOption {
+	return func(o *options) {
+		o.infoWriter, o.errorWriter = infoWriter, errorWriter
+	}
+}
+
+func NewGorm(config *GormConfig, options ...GormOption) (gl *GormLogger, err error) {
+	opts := defaultOptions()
+	for _, o := range options {
+		o(opts)
+	}
+
 	gl = &GormLogger{
 		config:                    config,
 		LogLevel:                  gormLogger.LogLevel(config.Level),
 		SlowThreshold:             time.Duration(config.SlowThreshold) * time.Millisecond,
 		SkipCallerLookup:          config.SkipCallerLookup,
 		IgnoreRecordNotFoundError: config.IgnoreRecordNotFoundError,
-	}
-
-	for _, o := range opts {
-		o(gl)
 	}
 
 	level := zap.InfoLevel.String()
@@ -68,20 +87,20 @@ func NewGorm(config *GormConfig, opts ...GormOption) (gl *GormLogger, err error)
 		level = zapcore.InfoLevel.String()
 	}
 
-	infoWriter, errWriter, err := logger.RotateWriter(config.InfoFile, config.ErrorFile)
+	infoWriter, errorWriter, err := logger.ResolveWriters(opts.infoWriter, opts.errorWriter, config.InfoFile, config.ErrorFile)
 	if err != nil {
-		return
+		return nil, err
 	}
 
 	l, err := zapLogger.NewLogger(
 		zapLogger.WithModule(logger.ModuleMySQL),
 		zapLogger.WithServiceName(config.ServiceName),
 		zapLogger.WithInfoWriter(infoWriter),
-		zapLogger.WithErrorWriter(errWriter),
+		zapLogger.WithErrorWriter(errorWriter),
 		zapLogger.WithLevel(level),
 	)
 	if err != nil {
-		return
+		return nil, err
 	}
 	gl.Logger = l.Logger
 
